@@ -5,7 +5,7 @@
 #' @export
 exhaustive <- function(input.folder,        # path to folder containing {slice.id}.RDS files
                        output.dir,          # path to output folder; a subfolder per slice is created
-                       k.arg      = 30,     # number of latent variables
+                       k.arg      = seq(10, 20, 30),  # number of latent variables; vector = sweep over multiple k values
                        L2_number  = 2000,   # target number of tiles per section
                        UMI.thr    = -Inf,   # minimum UMI per pixel; -Inf keeps all pixels
                        max.iter   = 0,      # iterative refinement passes; 0 = single-pass, no iterations
@@ -49,7 +49,7 @@ exhaustive <- function(input.folder,        # path to folder containing {slice.i
   coor <- input$coor[colnames(gene.exp), ]
   colnames(coor) <- c("array_row", "array_col")
 
-  #tile the section
+  #tile the section (done once; reused across all k values)
   grid_ids        <- tile_the_slice(coor, random.seed = 1, L2_number = L2_number)
   unique_grid_ids <- unique(grid_ids)
   tile_list       <- lapply(unique_grid_ids, function(x){ which(grid_ids == x) })
@@ -67,107 +67,122 @@ exhaustive <- function(input.folder,        # path to folder containing {slice.i
   gene.exp.tile <- tile_mat
   L.tile        <- L_generate(coor.tile, opt = "Tri.mesh")$L
 
-  #initial decomposition on tiles
-  ICAp.res.tile0 <- manifoldDecomp_adaptive(gene.exp.tile, L.tile,
-                                             k = k.arg, L4 = L4.arg, L4_adaptive = 2,
-                                             to_drop = T, save.complete = T, verbose = F)
-
-  #per-tile impact pass: transfer tile-level Z to pixel level
+  #per-tile graph Laplacians (done once; reused across all k values)
   density.grid  <- unlist(lapply(tile_list, length))
-  gene.exp.list <- L.list <- L1.grid <- L2.grid <- shur0.grid <- B.list <- list()
-
+  gene.exp.list <- L.list <- list()
   for (ii in 1:length(tile_list)){
     if (density.grid[ii] >= 3){
-      gene.exp.inuse <- as.matrix(gene.exp[, names(tile_list[[ii]])])
-      coor.inuse     <- coor[names(tile_list[[ii]]), , drop = F]
-      temp           <- L_generate(coor.inuse, opt = "Tri.mesh")
-
+      gene.exp.inuse      <- as.matrix(gene.exp[, names(tile_list[[ii]])])
+      coor.inuse          <- coor[names(tile_list[[ii]]), , drop = F]
+      temp                <- L_generate(coor.inuse, opt = "Tri.mesh")
       gene.exp.list[[ii]] <- gene.exp.inuse
       L.list[[ii]]        <- temp$L
-
-      ICAp.res.inuse <- impact_adaptive(ICAp.res.tile0$Z, gene.exp.inuse,
-                                         query.L  = temp$L, query.L4 = L4.arg,
-                                         to_drop  = F, scale = 1,
-                                         max.iter = 200, cor.thr = 0.8, verbose = F)
-      L1.grid[[ii]]    <- ICAp.res.inuse$L1
-      L2.grid[[ii]]    <- ICAp.res.inuse$L2
-      shur0.grid[[ii]] <- ICAp.res.inuse$shur0
-      B.list[[ii]]     <- ICAp.res.inuse$B
     }else{
-      gene.exp.list[[ii]] <- L.list[[ii]] <- L1.grid[[ii]] <-
-        L2.grid[[ii]] <- shur0.grid[[ii]] <- B.list[[ii]] <- NA
+      gene.exp.list[[ii]] <- L.list[[ii]] <- NA
     }#else
   }#for ii
 
-  #iterative refinement: repeat tile decomp + pixel transfer until convergence
   normF <- function(x){ sum(x^2) }
 
-  B.agg.pre      <- lapply(B.list, function(x){ apply(x, 1, mean) })
-  B.aggregate    <- do.call(cbind, B.agg.pre)
-  error.relative <- normF(ICAp.res.tile0$B - B.aggregate) / normF(ICAp.res.tile0$B)
-  error.accum    <- c(error.relative)
-  count          <- 0
-  ICAp.res.tile  <- ICAp.res.tile0
+  #sweep over k values
+  for (k in k.arg){
 
-  while ((error.relative >= 1e-3) & (count < max.iter)){
-    count <- count + 1
-    message("Iteration ", count, " | error: ", error.relative)
+    out.file <- paste0(slice.out, slice.id, "@k=", k, ".RDS")
+    if (file.exists(out.file)){ message("Skipping (exists): ", basename(out.file)); next }
 
-    ICAp.res.tile <- manifoldDecomp_adaptive(gene.exp.tile, L.tile,
-                                              B     = B.aggregate, k = k.arg, svdres = NULL,
-                                              shur0 = ICAp.res.tile0$shur0,
-                                              L1    = ICAp.res.tile0$L1, L2 = ICAp.res.tile0$L2,
-                                              L4    = L4.arg, L4_adaptive = 2,
-                                              to_drop = T, save.complete = T, verbose = F)
+    message("k = ", k, " ...")
 
-    B.list <- list()
+    #initial decomposition on tiles
+    ICAp.res.tile0 <- manifoldDecomp_adaptive(gene.exp.tile, L.tile,
+                                               k = k, L4 = L4.arg, L4_adaptive = 2,
+                                               to_drop = T, save.complete = T, verbose = F)
+
+    #per-tile impact pass: transfer tile-level Z to pixel level
+    L1.grid <- L2.grid <- shur0.grid <- B.list <- list()
     for (ii in 1:length(tile_list)){
       if (density.grid[ii] >= 3){
-        ICAp.res.inuse <- impact_adaptive(ICAp.res.tile$Z, gene.exp.list[[ii]],
-                                           query.L    = L.list[[ii]],
-                                           query.L1   = L1.grid[[ii]], query.L2    = L2.grid[[ii]],
-                                           query.L4   = L4.arg,        query.shur0 = shur0.grid[[ii]],
-                                           to_drop    = F, scale = 1,
-                                           max.iter   = 200, cor.thr = 0.8, verbose = F)
-        B.list[[ii]] <- ICAp.res.inuse$B
+        ICAp.res.inuse   <- impact_adaptive(ICAp.res.tile0$Z, gene.exp.list[[ii]],
+                                             query.L  = L.list[[ii]], query.L4 = L4.arg,
+                                             to_drop  = F, scale = 1,
+                                             max.iter = 200, cor.thr = 0.8, verbose = F)
+        L1.grid[[ii]]    <- ICAp.res.inuse$L1
+        L2.grid[[ii]]    <- ICAp.res.inuse$L2
+        shur0.grid[[ii]] <- ICAp.res.inuse$shur0
+        B.list[[ii]]     <- ICAp.res.inuse$B
       }else{
-        B.list[[ii]] <- NA
+        L1.grid[[ii]] <- L2.grid[[ii]] <- shur0.grid[[ii]] <- B.list[[ii]] <- NA
       }#else
     }#for ii
 
+    #iterative refinement: repeat tile decomp + pixel transfer until convergence
     B.agg.pre      <- lapply(B.list, function(x){ apply(x, 1, mean) })
     B.aggregate    <- do.call(cbind, B.agg.pre)
-    error.relative <- normF(ICAp.res.tile$B - B.aggregate) / normF(ICAp.res.tile$B)
-    error.accum    <- c(error.accum, error.relative)
-  }#while
+    error.relative <- normF(ICAp.res.tile0$B - B.aggregate) / normF(ICAp.res.tile0$B)
+    error.accum    <- c(error.relative)
+    count          <- 0
+    ICAp.res.tile  <- ICAp.res.tile0
 
-  B.allspots <- do.call(cbind, B.list)
-  Z.allspots <- ICAp.res.tile$Z
+    while ((error.relative >= 1e-3) & (count < max.iter)){
+      count <- count + 1
+      message("Iteration ", count, " | error: ", error.relative)
 
-  tile.id    <- rep(names(tile_list), times = unlist(lapply(tile_list, length)))
-  barcodes   <- unlist(lapply(tile_list, function(x){ names(x) }))
-  section.id <- rep(slice.id, times = length(barcodes))
+      ICAp.res.tile <- manifoldDecomp_adaptive(gene.exp.tile, L.tile,
+                                                B     = B.aggregate, k = k, svdres = NULL,
+                                                shur0 = ICAp.res.tile0$shur0,
+                                                L1    = ICAp.res.tile0$L1, L2 = ICAp.res.tile0$L2,
+                                                L4    = L4.arg, L4_adaptive = 2,
+                                                to_drop = T, save.complete = T, verbose = F)
 
-  tile.tab <- data.frame(section         = section.id,
-                          tile            = tile.id,
-                          barcodes        = barcodes,
-                          barcodes.unique = paste0(section.id, "@", barcodes))
+      B.list <- list()
+      for (ii in 1:length(tile_list)){
+        if (density.grid[ii] >= 3){
+          ICAp.res.inuse <- impact_adaptive(ICAp.res.tile$Z, gene.exp.list[[ii]],
+                                             query.L    = L.list[[ii]],
+                                             query.L1   = L1.grid[[ii]], query.L2    = L2.grid[[ii]],
+                                             query.L4   = L4.arg,        query.shur0 = shur0.grid[[ii]],
+                                             to_drop    = F, scale = 1,
+                                             max.iter   = 200, cor.thr = 0.8, verbose = F)
+          B.list[[ii]] <- ICAp.res.inuse$B
+        }else{
+          B.list[[ii]] <- NA
+        }#else
+      }#for ii
 
-  out <- list(gene.exp.tile  = gene.exp.tile,
-              L.tile         = L.tile,
-              coor.tile      = coor.tile,
-              ICAp.res.tile0 = ICAp.res.tile0,
-              ICAp.res.tile  = ICAp.res.tile,
-              coor           = coor,
-              B.list         = B.list,
-              B.allspots     = B.allspots,
-              Z.allspots     = Z.allspots,
-              error.accum    = error.accum,
-              tile.tab       = tile.tab)
+      B.agg.pre      <- lapply(B.list, function(x){ apply(x, 1, mean) })
+      B.aggregate    <- do.call(cbind, B.agg.pre)
+      error.relative <- normF(ICAp.res.tile$B - B.aggregate) / normF(ICAp.res.tile$B)
+      error.accum    <- c(error.accum, error.relative)
+    }#while
 
-  saveRDS(out, file = paste0(slice.out, slice.id, "@k=", k.arg, ".RDS"))
-  message("Saved: ", slice.out, slice.id, "@k=", k.arg, ".RDS")
-  invisible(out)
+    B.allspots <- do.call(cbind, B.list)
+    Z.allspots <- ICAp.res.tile$Z
+
+    tile.id    <- rep(names(tile_list), times = unlist(lapply(tile_list, length)))
+    barcodes   <- unlist(lapply(tile_list, function(x){ names(x) }))
+    section.id <- rep(slice.id, times = length(barcodes))
+
+    tile.tab <- data.frame(section         = section.id,
+                            tile            = tile.id,
+                            barcodes        = barcodes,
+                            barcodes.unique = paste0(section.id, "@", barcodes))
+
+    out <- list(gene.exp.tile  = gene.exp.tile,
+                L.tile         = L.tile,
+                coor.tile      = coor.tile,
+                ICAp.res.tile0 = ICAp.res.tile0,
+                ICAp.res.tile  = ICAp.res.tile,
+                coor           = coor,
+                B.list         = B.list,
+                B.allspots     = B.allspots,
+                Z.allspots     = Z.allspots,
+                error.accum    = error.accum,
+                tile.tab       = tile.tab)
+
+    saveRDS(out, file = out.file)
+    message("Saved: ", out.file)
+  }#for k
+
+  invisible(NULL)
 
 }#exhaustive
 
@@ -216,8 +231,9 @@ exhaustive_integrated <- function(input.folder,              # path to folder co
   input$gene.exp <- input$gene.exp[, keep.index]
   input$coor     <- input$coor[keep.index, ]
 
-  gene.exp <- input$gene.exp
-  coor     <- input$coor
+  gene.exp         <- input$gene.exp
+  coor             <- input$coor[colnames(gene.exp), ]
+  colnames(coor)   <- c("array_row", "array_col")
 
   #tile the section
   grid_ids        <- tile_the_slice(coor, random.seed = 1, L2_number = L2_number)
@@ -556,22 +572,27 @@ cluster_tile <- function(integration.dir,                           # path to in
 cluster_pixel <- function(input.dir,                                    # path to exhaustive_integrated output (contains {slice.id}/ subfolders)
                           raw.dir,                                       # path to raw RDS files (for pixel coordinates)
                           output.dir,                                    # path to output folder
-                          dataset.list,                                  # character vector of section IDs to cluster jointly
+                          dataset.list         = NULL,                   # character vector of section IDs; NULL = all subfolders in input.dir
                           mn                   = "DaVinci",             # model name prefix for output files
                           modality             = "Lipids",               # modality label for output files
                           k.opt.list           = c(30, 35, 40, 45, 50),  # SNN k values to sweep
                           num.of.clusters.opts = c(10, 15, 30, 50, 100), # cluster counts to sweep
                           harmony              = T,                      # apply Harmony batch correction across sections
                           sketch.per.section   = 10000,                  # target sketch pixels per section
-                          sketch.method        = "leverage",             # sampling: "leverage" (oversample rare) or "uniform"
+                          sketch.method        = "uniform",             # sampling: "leverage" (oversample rare) or "uniform"
                           lev.winsor           = 0.99,                  # winsorize leverage at this quantile; 1 = no cap
                           k.transfer           = 25,                    # kNN neighbors used to transfer sketch labels to all pixels
                           chunk.size           = 200000,                # pixels per transfer chunk (memory control)
                           weighted.vote        = T,                     # adaptive Gaussian weighting for kNN vote; F = majority
                           smooth.neighbor      = 8,                     # KNN k for spatial smoothing
-                          smooth.iters         = 1){                    # number of spatial smoothing passes
+                          smooth.iters         = 1,                     # number of spatial smoothing passes
+                          save.harmony         = F,                     # save mat.harmony as an RDS in output.dir
+                          harmonized.file      = "harmony"){            # filename (no extension) for the saved harmony RDS
 
   dir.create(output.dir, recursive = T, showWarnings = F)
+
+  if (is.null(dataset.list))
+    dataset.list <- list.dirs(input.dir, full.names = F, recursive = F)
 
   #internal: per-section leverage scores (hat-matrix diagonal on Harmony embedding)
   .leverage_section <- function(M){
@@ -650,6 +671,12 @@ cluster_pixel <- function(input.dir,                                    # path t
   }#else
 
   rm(mat, mat.norm); gc()
+
+  if (save.harmony){
+    saveRDS(mat.harmony, file = paste0(output.dir, harmonized.file, ".RDS"))
+    message("Saved mat.harmony to ", output.dir, harmonized.file, ".RDS")
+  }#if
+
   N <- nrow(mat.harmony)
 
   #sketch: per-section leverage-weighted (or uniform) sampling, fixed across all param sweeps
