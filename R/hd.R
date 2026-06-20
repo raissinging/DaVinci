@@ -586,8 +586,12 @@ cluster_pixel <- function(input.dir,                                    # path t
                           weighted.vote        = T,                     # adaptive Gaussian weighting for kNN vote; F = majority
                           smooth.neighbor      = 8,                     # KNN k for spatial smoothing
                           smooth.iters         = 1,                     # number of spatial smoothing passes
+                          transfer.method      = "knn",                 # kNN backend for label transfer: "knn" (FNN) or "hnsw" (RcppHNSW, faster in high-D)
+                          hnsw.n.threads       = 4,                    # threads for HNSW index build and search (only used when transfer.method = "hnsw")
                           save.harmony         = F,                     # save mat.harmony as an RDS in output.dir
                           harmonized.file      = "harmony"){            # filename (no extension) for the saved harmony RDS
+
+  transfer.method <- match.arg(transfer.method, c("knn", "hnsw"))
 
   dir.create(output.dir, recursive = T, showWarnings = F)
 
@@ -702,6 +706,25 @@ cluster_pixel <- function(input.dir,                                    # path t
 
   mat.sketch <- mat.harmony[sketch.idx, , drop = F]
 
+  #if using HNSW, build the index and cache all kNN chunks once outside the parameter loop
+  k.use <- min(k.transfer, nrow(mat.sketch))
+  if (transfer.method == "hnsw"){
+    cat("Building HNSW index on", nrow(mat.sketch), "sketch pixels...\n")
+    hnsw.idx <- RcppHNSW::hnsw_build(mat.sketch, distance = "l2", n_threads = hnsw.n.threads)
+    cat("Pre-computing kNN transfer (", N, "pixels,", ceiling(N / chunk.size), "chunks)...\n")
+    nn.cache <- vector("list", ceiling(N / chunk.size))
+    i.chunk  <- 1L
+    for (st in seq(1, N, by = chunk.size)){
+      en  <- min(st + chunk.size - 1, N)
+      nn  <- RcppHNSW::hnsw_search(mat.harmony[st:en, , drop = F], hnsw.idx,
+                                    k = k.use, n_threads = hnsw.n.threads)
+      nn.cache[[i.chunk]] <- list(nn.index = nn$idx,
+                                   nn.dist  = sqrt(pmax(nn$dist, 0)))
+      i.chunk <- i.chunk + 1L
+    }#for st
+    cat("kNN pre-computation done.\n")
+  }#if hnsw
+
   for (num.of.clusters in num.of.clusters.opts){
     for (k.opt in k.opt.list){
 
@@ -734,18 +757,29 @@ cluster_pixel <- function(input.dir,                                    # path t
       #transfer labels to all pixels via chunked weighted kNN
       partition      <- character(N); names(partition)      <- px.names
       transfer.score <- numeric(N);   names(transfer.score) <- px.names
-      k.use <- min(k.transfer, nrow(mat.sketch))
 
-      for (st in seq(1, N, by = chunk.size)){
-        en <- min(st + chunk.size - 1, N)
-        nn <- FNN::get.knnx(data  = mat.sketch,
-                             query = mat.harmony[st:en, , drop = F],
-                             k     = k.use)
-        v  <- .vote_chunk(nn$nn.index, nn$nn.dist, sketch.code, classes, weighted.vote)
-        partition[st:en]      <- v$label
-        transfer.score[st:en] <- v$conf
-        rm(nn, v); gc()
-      }#for st
+      if (transfer.method == "hnsw"){
+        i.chunk <- 1L
+        for (st in seq(1, N, by = chunk.size)){
+          en  <- min(st + chunk.size - 1, N)
+          nn  <- nn.cache[[i.chunk]]
+          v   <- .vote_chunk(nn$nn.index, nn$nn.dist, sketch.code, classes, weighted.vote)
+          partition[st:en]      <- v$label
+          transfer.score[st:en] <- v$conf
+          i.chunk <- i.chunk + 1L
+        }#for st
+      }else{
+        for (st in seq(1, N, by = chunk.size)){
+          en <- min(st + chunk.size - 1, N)
+          nn <- FNN::get.knnx(data  = mat.sketch,
+                               query = mat.harmony[st:en, , drop = F],
+                               k     = k.use)
+          v  <- .vote_chunk(nn$nn.index, nn$nn.dist, sketch.code, classes, weighted.vote)
+          partition[st:en]      <- v$label
+          transfer.score[st:en] <- v$conf
+          rm(nn, v); gc()
+        }#for st
+      }#else
 
       #multi-pass spatial smoothing per section
       partition.smooth <- partition

@@ -15,6 +15,7 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
                          integration.RData,             # path to integration .RData file
                          clusters.rds,                  # path to cluster_tile/cluster_pixel output .RDS
                          output.dir,                    # path to output folder
+                         embed.dir        = NULL,       # path to exhaustive_integrated output for pixel-level embed; NULL = use tile-level integration embed
                          elastic.net      = T,          # run elastic net LV ranking
                          naive            = F,          # run naive mean-diff LV ranking
                          downsample       = NULL,       # target pos:neg ratio; NULL = no downsampling
@@ -31,16 +32,33 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
 
   dataset.list <- list.files(exhaustive.dir)
 
-  load(integration.RData, temp.env1 <- new.env())
-  temp.env1 <- as.list(temp.env1)
-
-  embed    <- temp.env1$integration.res$LVs_embeddings
-  full.ids <- rownames(embed)
-  sec.idx  <- as.numeric(unlist(lapply(strsplit(full.ids, "_"), function(x) x[1])))
-  tile.ids <- unlist(lapply(strsplit(full.ids, "_"), function(x) paste0(x[-1], collapse = "_")))
-  sec.names <- dataset.list[sec.idx]
-  rownames(embed) <- paste0(sec.names, "@", tile.ids)
-  mat <- as.matrix(embed)
+  if (!is.null(embed.dir)){
+    # pixel-level: load B.allspots from each exhaustive_integrated section RDS
+    embed.blocks <- lapply(dataset.list, function(sid){
+      ff <- list.files(paste0(embed.dir, sid), pattern = "\\.RDS$", full.names = TRUE)
+      if (length(ff) == 0) return(NULL)
+      obj <- readRDS(ff[1])
+      B   <- obj$B.allspots          # LV x pixel
+      if (is.null(B)) return(NULL)
+      mat.px <- t(B)                 # pixel x LV
+      rownames(mat.px) <- paste0(sid, "@", colnames(B))
+      mat.px
+    })
+    embed.blocks <- Filter(Negate(is.null), embed.blocks)
+    mat <- do.call(rbind, embed.blocks)
+    if (verbose) cat("Pixel-level embed:", nrow(mat), "pixels x", ncol(mat), "LVs\n")
+  } else {
+    # tile-level: load from integration .RData
+    load(integration.RData, temp.env1 <- new.env())
+    temp.env1 <- as.list(temp.env1)
+    embed    <- temp.env1$integration.res$LVs_embeddings
+    full.ids <- rownames(embed)
+    sec.idx  <- as.numeric(unlist(lapply(strsplit(full.ids, "_"), function(x) x[1])))
+    tile.ids <- unlist(lapply(strsplit(full.ids, "_"), function(x) paste0(x[-1], collapse = "_")))
+    sec.names <- dataset.list[sec.idx]
+    rownames(embed) <- paste0(sec.names, "@", tile.ids)
+    mat <- as.matrix(embed)
+  }
 
   res              <- readRDS(clusters.rds)
   clusters         <- res$partition.smooth
@@ -48,7 +66,7 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
   names(clusters)  <- paste0(slice.ids, "@", names(clusters))
 
   common <- intersect(rownames(mat), names(clusters))
-  if (verbose) cat("Common tiles:", length(common), "\n")
+  if (verbose) cat("Common entries:", length(common), "\n")
 
   mat.sub <- mat[common, , drop = F]
   cl.sub  <- clusters[common]
@@ -60,7 +78,7 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
   dir.create(output.dir, recursive = T, showWarnings = F)
   clusters.uniq <- sort(unique(cl.sub))
   if (!is.null(clusters.subset))
-    clusters.uniq <- intersect(clusters.uniq, clusters.subset)
+    clusters.uniq <- clusters.uniq[as.character(clusters.uniq) %in% as.character(clusters.subset)]
 
   lv.names <- colnames(mat.sub)
   sections  <- unique(sec.sub)
@@ -119,8 +137,7 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
     for (cl in clusters.uniq){
       if (verbose) message(sprintf("  Cluster %s... ", cl), appendLF = F)
 
-      sec.coefs   <- list()
-      sec.metrics <- list()
+      sec.coefs <- list()
 
       for (sec in sections){
         sec.idx.s <- which(sec.sub == sec)
@@ -136,54 +153,30 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
           neg.s   <- sample(neg.s, n.neg.s)
         }#if
 
-        train.pos <- sample(pos.s, floor(0.8 * length(pos.s)))
-        train.neg <- sample(neg.s, floor(0.8 * length(neg.s)))
-        train.idx <- c(train.pos, train.neg)
-        test.idx  <- setdiff(c(pos.s, neg.s), train.idx)
-
-        X.train <- mat.sub[sec.idx.s[train.idx], ]; y.train <- y.sec[train.idx]
-        X.test  <- mat.sub[sec.idx.s[test.idx],  ]; y.test  <- y.sec[test.idx]
+        all.idx <- c(pos.s, neg.s)
+        X.all   <- mat.sub[sec.idx.s[all.idx], ]; y.all <- y.sec[all.idx]
 
         if (is.null(cv.folds)){
-          #no CV: fit glmnet for each alpha, pick best alpha+lambda by BIC
           fit.list <- lapply(alpha.sweep, function(a)
-            glmnet::glmnet(X.train, y.train, family = "binomial", alpha = a))
+            glmnet::glmnet(X.all, y.all, family = "binomial", alpha = a))
           bic.min  <- sapply(fit.list, function(fit){
-            min((1 - fit$dev.ratio) * fit$nulldev + log(nrow(X.train)) * fit$df)
+            min((1 - fit$dev.ratio) * fit$nulldev + log(nrow(X.all)) * fit$df)
           })
           best.i   <- which.min(bic.min)
           fit.best <- fit.list[[best.i]]
-          bic      <- (1 - fit.best$dev.ratio) * fit.best$nulldev + log(nrow(X.train)) * fit.best$df
+          bic      <- (1 - fit.best$dev.ratio) * fit.best$nulldev + log(nrow(X.all)) * fit.best$df
           best.l   <- fit.best$lambda[which.min(bic)]
           coefs    <- coef(fit.best, s = best.l)[-1]
-          best.a   <- alpha.sweep[best.i]
-          pred.prob <- as.numeric(predict(fit.best, X.test, s = best.l, type = "response"))
         }else{
-          #CV: sweep alpha values, pick best alpha by min CV error
           cv.list  <- lapply(alpha.sweep, function(a)
-            glmnet::cv.glmnet(X.train, y.train, family = "binomial", alpha = a, nfolds = cv.folds))
+            glmnet::cv.glmnet(X.all, y.all, family = "binomial", alpha = a, nfolds = cv.folds))
           best.i   <- which.min(sapply(cv.list, function(f) min(f$cvm)))
           cv.fit   <- cv.list[[best.i]]
           coefs    <- coef(cv.fit, s = "lambda.min")[-1]
-          best.a   <- alpha.sweep[best.i]
-          pred.prob <- as.numeric(predict(cv.fit, X.test, s = "lambda.min", type = "response"))
         }#else
 
-        names(coefs)      <- lv.names
-        sec.coefs[[sec]]  <- abs(coefs)
-
-        pred.class <- ifelse(pred.prob > 0.5, 1, 0)
-        sec.metrics[[sec]] <- list(
-          accuracy         = mean(pred.class == y.test),
-          AUC              = tryCatch(as.numeric(pROC::auc(pROC::roc(y.test, pred.prob, quiet = T))),
-                                      error = function(e) NA_real_),
-          AUPRC            = tryCatch(PRROC::pr.curve(scores.class0 = pred.prob[y.test == 1],
-                                                      scores.class1 = pred.prob[y.test == 0],
-                                                      curve = F)$auc.integral,
-                                      error = function(e) NA_real_),
-          best_alpha       = best.a,
-          downsample_ratio = if (!is.null(downsample)) eq.ratio else NA_real_
-        )
+        names(coefs)     <- lv.names
+        sec.coefs[[sec]] <- abs(coefs)
       }#for sec
 
       n.sec <- length(sec.coefs)
@@ -205,11 +198,6 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
       top.lvs <- lv.names[top.idx]
       use.n   <- length(top.idx)
 
-      mean.acc   <- round(mean(sapply(sec.metrics, `[[`, "accuracy"),  na.rm = T), 4)
-      mean.auc   <- round(mean(sapply(sec.metrics, `[[`, "AUC"),       na.rm = T), 4)
-      mean.auprc <- round(mean(sapply(sec.metrics, `[[`, "AUPRC"),     na.rm = T), 4)
-      mean.ds    <- mean(sapply(sec.metrics, `[[`, "downsample_ratio"), na.rm = T)
-
       en.rows[[cl]] <- data.frame(
         cluster            = cl,
         rank               = 1:use.n,
@@ -217,10 +205,6 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
         mean_coef_abs      = mean.coef.abs[top.idx],
         n_sections_nonzero = n.nonzero[top.idx],
         n_sections_total   = n.sec,
-        accuracy           = mean.acc,
-        AUC                = mean.auc,
-        AUPRC              = mean.auprc,
-        downsample_ratio   = if (!is.null(downsample)) mean.ds else NA_real_,
         stringsAsFactors   = F
       )
 
@@ -228,14 +212,18 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
     }#for cl
 
     en.df <- do.call(rbind, en.rows)
-    en.df$cluster <- tryCatch(as.integer(en.df$cluster),
-      warning = function(w) tryCatch(as.numeric(en.df$cluster),
-        warning = function(w) en.df$cluster))
-    en.df <- en.df[order(en.df$cluster, en.df$rank), ]
-    write.table(en.df,
-                file.path(output.dir, "elasticnet_topLVs.tsv"),
-                sep = "\t", quote = F, row.names = F)
-    cat("Wrote elasticnet_topLVs.tsv\n")
+    if (is.null(en.df) || nrow(en.df) == 0){
+      cat("No results to write for elastic net.\n")
+    }else{
+      en.df$cluster <- tryCatch(as.integer(en.df$cluster),
+        warning = function(w) tryCatch(as.numeric(en.df$cluster),
+          warning = function(w) en.df$cluster))
+      en.df <- en.df[order(en.df$cluster, en.df$rank), ]
+      write.table(en.df,
+                  file.path(output.dir, "elasticnet_topLVs.tsv"),
+                  sep = "\t", quote = F, row.names = F)
+      cat("Wrote elasticnet_topLVs.tsv\n")
+    }#if not empty
   }#if elastic.net
 
   invisible(NULL)
@@ -245,37 +233,43 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
 
 #' Evaluate cluster quality across n-cluster solutions
 #'
-#' Loads pre-computed Louvain clusterings and computes FM index and Silhouette
+#' Loads pre-computed clusterings and computes FM index and Silhouette
 #' score across cluster counts, then plots the curves and reports the optimal n.
-#' FM is computed on the full cluster labels; Silhouette uses a subsampled LV
+#' FM is computed on the full cluster labels; Silhouette may use a subsampled LV
 #' embedding (controlled by subsample).
 #'
 #' @export
-eval_clusters <- function(exhaustive.dir,                       # path to exhaustive output (to resolve section names)
+eval_clusters <- function(exhaustive.dir,                       # path to exhaustive output
                           integration.RData,                    # path to integration .RData file
-                          cluster.dir,                          # path to cluster/ folder containing .RDS files
-                          model.name  = "all@FineTune@first@default", # .RData filename (no extension)
-                          k.opt       = 40,                     # which SNN k to select from cluster files
-                          subsample   = 10000,                   # max tiles for silhouette; NULL = all
+                          cluster.dir,                          # exact path to folder containing the .RDS files (e.g. .../all/louvain/)
+                          k.opt       = 40,                     # which k to select from cluster files in the folder
+                          metric      = "both",                 # "silhouette", "fm", or "both"
+                          subsample   = 10000,                  # max tiles for silhouette; NULL = use all/no subsampling (may cause OOM)
                           seed        = 42,                     # random seed for subsampling
                           title       = NULL,                   # plot title; NULL = auto
                           verbose     = T){                     # print per-n progress
 
+  metric <- match.arg(metric, c("silhouette", "fm", "both"))
+
   set.seed(seed)
 
   #load LV matrix from integration output
-  dataset.list <- list.files(exhaustive.dir)
+  files.tmp    <- list.files(cluster.dir, pattern = paste0("k=", k.opt), full.names = T)
+  if (length(files.tmp) == 0) stop("No files found in cluster.dir matching k=", k.opt)
+  dataset.list <- readRDS(files.tmp[1])$dataset.list
   load(paste0(integration.RData), e <- new.env())
   e     <- as.list(e)
   embed <- e$integration.res$LVs_embeddings
 
-  sids         <- unlist(lapply(strsplit(rownames(embed), "_"), function(x) paste0(x[-1], collapse = "_")))
-  sec.idx      <- unlist(lapply(strsplit(rownames(embed), "_"), function(x) x[1]))
-  mat.slice.id <- dataset.list[as.numeric(sec.idx)]
-  rownames(embed) <- sids
+  full.ids         <- rownames(embed)
+  sec.idx.num      <- as.numeric(unlist(lapply(strsplit(full.ids, "_"), function(x) x[1])))
+  tile.ids         <- unlist(lapply(strsplit(full.ids, "_"), function(x) paste0(x[-1], collapse = "_")))
+  sec.names        <- dataset.list[sec.idx.num]
+  mat.slice.id     <- sec.names
+  rownames(embed)  <- paste0(sec.names, "@", tile.ids) # adds section names to rownames for alignment with cluster labels
   mat <- L2Norm(as.matrix(embed), MARGIN = 1)
 
-  #optionally subsample for silhouette (O(n^2) memory)
+  #optionally subsample for silhouette to use less memory and speed up stuff for silhouette
   if (!is.null(subsample) && nrow(mat) > subsample){
     mat.sub <- mat[sample(nrow(mat), subsample), ]
   }else{
@@ -299,7 +293,12 @@ eval_clusters <- function(exhaustive.dir,                       # path to exhaus
   n.vals <- sort(n.vals)
 
   if (verbose) cat("Loading", length(files), "clusterings (k=", k.opt, ")...\n")
-  clusterings <- lapply(files, function(f) readRDS(f)$partition.smooth)
+  clusterings <- lapply(files, function(f) {
+    r  <- readRDS(f)
+    cl <- r$partition.smooth
+    names(cl) <- paste0(r$mat.slice.id, "@", names(cl))
+    cl
+  })
   names(clusterings) <- as.character(n.vals)
 
   #compute FM + silhouette per n
@@ -307,45 +306,68 @@ eval_clusters <- function(exhaustive.dir,                       # path to exhaus
     cl.full <- clusterings[[i]]
 
     #FM: compare to adjacent n solutions
-    fmi.vals <- numeric(0)
-    if (i > 1){
-      common2  <- intersect(names(cl.full), names(clusterings[[i - 1]]))
-      if (length(common2) > 0)
-        fmi.vals <- c(fmi.vals, .fm_index(cl.full[common2], clusterings[[i - 1]][common2]))
-    }#if
-    if (i < length(n.vals)){
-      common2  <- intersect(names(cl.full), names(clusterings[[i + 1]]))
-      if (length(common2) > 0)
-        fmi.vals <- c(fmi.vals, .fm_index(cl.full[common2], clusterings[[i + 1]][common2]))
-    }#if
-    fm <- if (length(fmi.vals) > 0) mean(fmi.vals) else NA_real_
+    fm <- NA_real_
+    if (metric %in% c("fm", "both")){
+      fmi.vals <- numeric(0)
+      if (i > 1){
+        common2  <- intersect(names(cl.full), names(clusterings[[i - 1]]))
+        if (length(common2) > 0)
+          fmi.vals <- c(fmi.vals, .fm_index(cl.full[common2], clusterings[[i - 1]][common2]))
+      }#if
+      if (i < length(n.vals)){
+        common2  <- intersect(names(cl.full), names(clusterings[[i + 1]]))
+        if (length(common2) > 0)
+          fmi.vals <- c(fmi.vals, .fm_index(cl.full[common2], clusterings[[i + 1]][common2]))
+      }#if
+      fm <- if (length(fmi.vals) > 0) mean(fmi.vals) else NA_real_
+    }#if fm
 
     #silhouette: restrict to mat.sub pixels that were clustered
-    common <- intersect(rownames(mat.sub), names(cl.full))
-    sil    <- NA_real_
-    if (length(common) >= 2){
-      cl     <- cl.full[common]
-      sm     <- mat.sub[common, ]
-      cl.int <- as.integer(as.factor(cl))
-      if (length(unique(cl.int)) >= 2)
-        sil <- mean(cluster::silhouette(cl.int, dist(sm))[, 3])
-    }#if
+    sil <- NA_real_
+    if (metric %in% c("silhouette", "both")){
+      common <- intersect(rownames(mat.sub), names(cl.full))
+      if (length(common) >= 2){
+        cl     <- cl.full[common]
+        sm     <- mat.sub[common, ]
+        cl.int <- as.integer(as.factor(cl))
+        if (length(unique(cl.int)) >= 2)
+          sil <- mean(cluster::silhouette(cl.int, dist(sm))[, 3])
+      }#if
+    }#if silhouette
 
-    if (verbose) cat(sprintf("n=%d  FM=%.3f  sil=%.3f\n", n.vals[i], fm, sil))
+    if (verbose){
+      msg <- sprintf("n=%d", n.vals[i])
+      if (metric %in% c("fm",        "both")) msg <- paste0(msg, sprintf("  FM=%.3f",  fm))
+      if (metric %in% c("silhouette","both")) msg <- paste0(msg, sprintf("  sil=%.3f", sil))
+      cat(msg, "\n")
+    }#if verbose
     data.frame(n = n.vals[i], FM = fm, Silhouette = sil)
   }))
 
   #optimal n
-  best.sil <- if (any(!is.na(results$Silhouette))) results$n[which.max(results$Silhouette)] else NULL
-  best.fm  <- if (any(!is.na(results$FM)))         results$n[which.max(ifelse(is.na(results$FM), -Inf, results$FM))] else NULL
-  if (verbose) cat(sprintf("\nOptimal n — Silhouette: %s | FM: %s\n",
-                            if (is.null(best.sil)) "NA" else best.sil,
-                            if (is.null(best.fm))  "NA" else best.fm))
+  best.sil <- if (metric %in% c("silhouette","both") && any(!is.na(results$Silhouette)))
+                results$n[which.max(results$Silhouette)] else NULL
+  best.fm  <- if (metric %in% c("fm","both") && any(!is.na(results$FM)))
+                results$n[which.max(ifelse(is.na(results$FM), -Inf, results$FM))] else NULL
 
-  #plot
-  long.df <- reshape(results[, c("n", "FM", "Silhouette")],
-                     varying = c("FM", "Silhouette"), v.names = "value",
-                     timevar = "metric", times = c("FM", "Silhouette"), direction = "long")
+  if (verbose){
+    parts <- c()
+    if (!is.null(best.sil)) parts <- c(parts, paste0("Silhouette: ", best.sil))
+    if (!is.null(best.fm))  parts <- c(parts, paste0("FM: ",         best.fm))
+    if (length(parts) > 0)  cat(sprintf("\nOptimal n — %s\n", paste(parts, collapse = " | ")))
+  }#if verbose
+
+  #plot: only include columns for active metrics
+  active.cols   <- c(if (metric %in% c("fm",        "both")) "FM",
+                     if (metric %in% c("silhouette","both")) "Silhouette")
+  active.colors <- c("FM" = "purple", "Silhouette" = "forestgreen")[active.cols]
+
+  long.df <- reshape(results[, c("n", active.cols)],
+                     varying   = active.cols,
+                     v.names   = "value",
+                     timevar   = "metric",
+                     times     = active.cols,
+                     direction = "long")
 
   highlight.rows <- list()
   if (!is.null(best.sil))
@@ -357,9 +379,11 @@ eval_clusters <- function(exhaustive.dir,                       # path to exhaus
       n = best.fm, metric = "FM",
       y = results$FM[match(best.fm, results$n)])
 
-  plot.title <- if (!is.null(title)) title else
-    paste0("Cluster quality — k=", k.opt,
-           if (!is.null(subsample)) paste0(" (sil subsample=", subsample, ")") else "")
+  plot.title <- if (!is.null(title)) title else{
+    suf <- if (metric %in% c("silhouette","both") && !is.null(subsample))
+             paste0(" (sil subsample=", subsample, ")") else ""
+    paste0("Cluster quality — k=", k.opt, suf)
+  }
 
   p <- ggplot2::ggplot() +
     ggplot2::geom_line(data  = long.df,
@@ -368,7 +392,7 @@ eval_clusters <- function(exhaustive.dir,                       # path to exhaus
     ggplot2::geom_point(data = long.df,
                         ggplot2::aes(x = n, y = value, color = metric),
                         size = 2, na.rm = T) +
-    ggplot2::scale_color_manual(values = c("FM" = "purple", "Silhouette" = "forestgreen")) +
+    ggplot2::scale_color_manual(values = active.colors) +
     ggplot2::scale_x_log10(breaks = n.vals, labels = n.vals) +
     ggplot2::labs(title = plot.title, x = "Number of clusters (n)", y = "Score", color = NULL) +
     ggplot2::theme_classic() +
@@ -386,3 +410,87 @@ eval_clusters <- function(exhaustive.dir,                       # path to exhaus
   invisible(results)
 
 }#eval_clusters
+
+
+#' Extract LV loadings from integration output
+#'
+#' Builds a loading matrix from the integration model, optionally writing the
+#' top-N feature table to a TSV file and optionally plotting a z-scored bubble heatmap.
+#'
+#' @export
+lv_loadings <- function(integration.RData,   # path to integration .RData file
+                              output.dir  = NULL,  # directory to write TSV; NULL = skip
+                              num.of.top  = NULL,  # top N features per LV; NULL = all features
+                              plot        = FALSE, # whether to print the bubble heatmap
+                              label.size  = 20){   # base font size for the plot
+
+  load(integration.RData, e <- new.env())
+  e <- as.list(e)
+  loadings <- e$integration.res$loading
+
+  feature.unique <- unique(unlist(lapply(loadings, names)))
+  tab <- matrix(0, nrow = length(feature.unique), ncol = length(loadings))
+  rownames(tab) <- feature.unique
+  colnames(tab) <- paste0("LV ", seq_along(loadings))
+
+  for (ii in seq_along(loadings))
+    tab[names(loadings[[ii]]), ii] <- loadings[[ii]]
+
+  if (!is.null(output.dir)){
+    dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+    feature.names <- c(); feature.values <- c()
+    feature.index <- c(); LV.index <- c()
+    for (ii in seq_along(loadings)){
+      n.use <- if (is.null(num.of.top)) length(loadings[[ii]]) else num.of.top
+      tmp <- sort(loadings[[ii]], decreasing = TRUE)[seq_len(n.use)]
+      feature.names  <- c(feature.names,  names(tmp))
+      feature.values <- c(feature.values, as.numeric(tmp))
+      feature.index  <- c(feature.index,  seq_len(n.use))
+      LV.index       <- c(LV.index,       rep(paste0("LV ", ii), n.use))
+    }
+    loading.df <- data.frame(LV      = LV.index,
+                             Feature = feature.names,
+                             Value   = feature.values,
+                             Index   = feature.index)
+    tsv.name <- if (is.null(num.of.top)) "loading@all.tsv" else paste0("loading@top=", num.of.top, ".tsv")
+    write.table(loading.df,
+                file.path(output.dir, tsv.name),
+                sep = "\t", quote = FALSE, row.names = FALSE)
+    cat("Wrote loading TSV to", output.dir, "\n")
+  }#if output.dir
+
+  tab.z  <- scale(tab)
+  hc     <- hclust(dist(tab.z))
+  to_plot <- data.frame(
+    val = c(tab.z),
+    y   = rep(rownames(tab.z), times = ncol(tab.z)),
+    x   = rep(colnames(tab.z), each  = nrow(tab.z))
+  )
+  to_plot$y <- factor(to_plot$y, levels = rownames(tab.z)[rev(hc$order)])
+
+  p <- ggplot2::ggplot(to_plot, ggplot2::aes(x = x, y = y, color = val, size = val)) +
+    ggplot2::geom_point() +
+    ggpubr::theme_pubr(base_size = label.size) +
+    ggplot2::xlab("") + ggplot2::ylab("") +
+    ggplot2::scale_size_area(max_size = 9) +
+    ggplot2::labs(color = "loading\n(z scored)", size = "loading\n(z scored)") +
+    ggplot2::theme(
+      legend.position             = "bottom",
+      legend.justification.bottom = "center",
+      legend.box.just             = "center",
+      legend.location             = "plot",
+      legend.box                  = "horizontal",
+      axis.text.x  = ggplot2::element_text(angle = 45, vjust = 1, hjust = 1),
+      panel.grid.major = ggplot2::element_line(colour = "gray", linewidth = 0.1),
+      axis.line    = ggplot2::element_blank(),
+      axis.ticks   = ggplot2::element_blank()
+    ) +
+    ggplot2::scale_color_gradientn(
+      colors = colorRampPalette(RColorBrewer::brewer.pal(9, "Reds"))(255),
+      limits = c(min(to_plot$val), max(to_plot$val))
+    )
+
+  if (plot) print(p)
+  invisible(list(loading.tab = tab, loading.tab.z = tab.z, plot = p))
+
+}#lv_loadings

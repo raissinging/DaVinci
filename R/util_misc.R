@@ -157,6 +157,7 @@ return(list(val = val,
 
 
 
+#' @export
 L2Norm <- function(mat, MARGIN = 1){
   normalized <- sweep(
     x = mat,
