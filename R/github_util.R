@@ -190,7 +190,10 @@ preprocess <- function(mat,
   ################################################
   if (type %in% c("rna", "protein", "rna_raw")){
 
-    tmp <- gene_normalization(mat, frac.thr = frac.thr, MT.remove = MT.remove, median.norm = median.norm)
+    tmp <- gene_normalization(mat, 
+                              frac.thr = frac.thr, 
+                              MT.remove = MT.remove, 
+                              median.norm = median.norm)
 
     if (type=="rna_raw"){
       mat <- tmp$gene.exp
@@ -201,7 +204,10 @@ preprocess <- function(mat,
 
   }else if (type=="atac"){
 
-    mat <- LSI_normalization(mat, method = LSI.method, scale.factor = LSI.scale.factor, peak.filter.thr = LSI.peak.filter.thr)
+    mat <- LSI_normalization(mat, 
+                             method = LSI.method, 
+                             scale.factor = LSI.scale.factor, 
+                             peak.filter.thr = LSI.peak.filter.thr)
 
   }#else
 
@@ -216,12 +222,16 @@ preprocess <- function(mat,
 
   #processing the coor
   ################################################
-  temp <- L_generate(coor, opt = graph.opt)
+  temp <- L_generate(coor, 
+                     opt = graph.opt)
   L <- temp$L
 
   message(paste0("Graph generation finishes."))
 
-  return(list(mat = Matrix::as.matrix(mat), coor = coor, L = L, L.visual = temp$L.visual))
+  return(list(mat = Matrix::as.matrix(mat), 
+              coor = coor, 
+              L = L, 
+              L.visual = temp$L.visual))
 }#preprocess
 
 
@@ -308,6 +318,11 @@ L_generate <- function(coor,
 
     coor.dist <- dist(coor)
     coor.dist <- as.matrix(coor.dist)
+
+    if (num.of.neighbor > nrow(coor)){
+      num.of.neighbor <- nrow(coor)
+      message(paste0("The number of neighbors has been adjusted to be ", num.of.neighbor))
+    }#if
 
     for (i in 1:nrow(coor)){
       tt <- setdiff(1:nrow(coor), i)

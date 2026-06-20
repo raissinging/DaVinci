@@ -663,7 +663,8 @@ scatter.FeaturePlot <- function(
                                 raster.dpi = 300,
                                 downsample = NULL, #between 0 and 1, fraction of the data to be visualized
                                 percentile = c(0,1),
-                                limits = NULL
+                                limits = NULL,
+                                paletteer = "ggthemes::Orange-Blue Diverging" #ggthemes::Orange-Blue Diverging, grDevices::Reds, grDevices::Peach
                                 ){
 
     if (gene.verbose & is.null(loading)){
@@ -731,14 +732,14 @@ scatter.FeaturePlot <- function(
       p <- ggplot2::ggplot(dat.plot, aes(x=x,y = y, col = val))+
                   ggrastr::geom_point_rast(size = pt.size, raster.dpi = raster.dpi)+
                   theme_void()+
-                  paletteer::scale_color_paletteer_c("ggthemes::Orange-Blue Diverging", 
+                  paletteer::scale_color_paletteer_c(paletteer, 
                                                     direction = -1,
                                                     limits = limits)
     }else{
       p <- ggplot2::ggplot(dat.plot, aes(x=x,y = y, col = val))+
                   geom_point(size = pt.size)+
                   theme_void()+
-                  paletteer::scale_color_paletteer_c("ggthemes::Orange-Blue Diverging", 
+                  paletteer::scale_color_paletteer_c(paletteer, 
                                                     direction = -1,
                                                     limits = limits)
     }#else
@@ -792,7 +793,7 @@ scatter.FeaturePlot <- function(
         p[[ii]] <- ggplot2::ggplot(dat.plot, aes(x=x,y = y, col = val))+
                  ggrastr::geom_point_rast(size = pt.size, raster.dpi = raster.dpi)+
                  theme_void()+
-                 paletteer::scale_color_paletteer_c("ggthemes::Orange-Blue Diverging", 
+                 paletteer::scale_color_paletteer_c(paletteer, 
                                                     direction = -1,
                                                     limits = limits)+
                  ggtitle(rownames(LVs)[ii])+
@@ -801,7 +802,7 @@ scatter.FeaturePlot <- function(
         p[[ii]] <- ggplot2::ggplot(dat.plot, aes(x=x,y = y, col = val))+
                  geom_point(size = pt.size)+
                  theme_void()+
-                 paletteer::scale_color_paletteer_c("ggthemes::Orange-Blue Diverging", 
+                 paletteer::scale_color_paletteer_c(paletteer, 
                                                     direction = -1,
                                                     limits = limits)+
                  ggtitle(rownames(LVs)[ii])+
@@ -832,7 +833,7 @@ scatter.FeaturePlot <- function(
         p <- ggplot(dat.plot, aes(x=x,y = y, col = val))+
               ggrastr::geom_point_rast(size = pt.size, raster.dpi = raster.dpi)+
               theme_void()+
-              paletteer::scale_color_paletteer_c("ggthemes::Orange-Blue Diverging", 
+              paletteer::scale_color_paletteer_c(paletteer, 
                                                  direction = -1,
                                                  limits = limits)+
               ggtitle(rownames(LVs)[LV.index])+
@@ -841,7 +842,7 @@ scatter.FeaturePlot <- function(
         p <- ggplot(dat.plot, aes(x=x,y = y, col = val))+
               geom_point(size = pt.size)+
               theme_void()+
-              paletteer::scale_color_paletteer_c("ggthemes::Orange-Blue Diverging", 
+              paletteer::scale_color_paletteer_c(paletteer, 
                                                  direction = -1,
                                                  limits = limits)+
               ggtitle(rownames(LVs)[LV.index])+
@@ -885,7 +886,8 @@ scatter.FeaturePlot.list <- function(LVs,
                                     return.obj = F,
                                     downsample = NULL,
                                     percentile = c(0,1),
-                                    limits = NULL
+                                    limits = NULL,
+                                    paletteer = "ggthemes::Orange-Blue Diverging" #ggthemes::Orange-Blue Diverging, grDevices::Reds, grDevices::Peach
                                     ){
           
 
@@ -937,7 +939,8 @@ scatter.FeaturePlot.list <- function(LVs,
                                                                 raster.dpi = raster.dpi,
                                                                 downsample = downsample,
                                                                 percentile = percentile,
-                                                                limits = limits)+
+                                                                limits = limits,
+                                                                paletteer = paletteer)+
                                           ggtitle(paste0(dataset.opts[ii], " ", colnames(LVs)[jj]))+
                                           theme(plot.title = element_text(size = title.size))
             
@@ -952,7 +955,8 @@ scatter.FeaturePlot.list <- function(LVs,
                                                                 raster.dpi = raster.dpi,
                                                                 downsample = downsample,
                                                                 percentile = percentile,
-                                                                limits = limits)+
+                                                                limits = limits,
+                                                                paletteer = paletteer)+
                                           ggtitle(paste0(dataset.opts[ii], " ", colnames(LVs)[jj]))+
                                           theme(plot.title = element_text(size = title.size))
                     }#else

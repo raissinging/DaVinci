@@ -20,7 +20,8 @@ scatter.FeaturePlot(
   raster.dpi = 300,
   downsample = NULL,
   percentile = c(0, 1),
-  limits = NULL
+  limits = NULL,
+  paletteer = "ggthemes::Orange-Blue Diverging"
 )
 }
 \description{

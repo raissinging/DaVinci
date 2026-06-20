@@ -19,7 +19,8 @@ scatter.FeaturePlot.list(
   return.obj = F,
   downsample = NULL,
   percentile = c(0, 1),
-  limits = NULL
+  limits = NULL,
+  paletteer = "ggthemes::Orange-Blue Diverging"
 )
 }
 \description{

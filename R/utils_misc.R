@@ -238,6 +238,7 @@ tile_the_slice <- function(coord,
   point_counts <- lengths(point_in_grid)
   exclude_index <- sort(which(point_counts < tile.minimum), decreasing = T)
   
+
   while (length(exclude_index)>0){
     message("Tile is being adjusted to include enough points.")
     
@@ -308,7 +309,7 @@ tile_the_slice <- function(coord,
         adjacent_cells <- adjacency_matrix[[cell]]
         
         #merge with the first cell
-        target_cell <- setdiff( adjacent_cells, exclude_index)[1] 
+        target_cell <- setdiff( adjacent_cells, collinearity.index)[1] 
         
         if (is.na(target_cell)){
           
@@ -319,7 +320,7 @@ tile_the_slice <- function(coord,
             new_adjacent_cells <- c(new_adjacent_cells, adjacency_matrix[[adjacent_cells[ii]]])
           }#for ii
           
-          target_cell <- setdiff(unique(new_adjacent_cells), exclude_index)[1]
+          target_cell <- setdiff(unique(new_adjacent_cells), collinearity.index)[1]
         }#if 
                 
         #merged step
@@ -329,8 +330,10 @@ tile_the_slice <- function(coord,
         
     }#for cell
 
-    point_in_grid <- sf::st_intersects(grid, pos)
 
+
+    #recalcualte the colinearity.idnex
+    point_in_grid <- sf::st_intersects(grid, pos)
     collinearity.index <- c()
     for (ii in 1:length(point_in_grid)){
 
@@ -341,7 +344,7 @@ tile_the_slice <- function(coord,
       }#if 
     }#for ii
 
-  }#while
+  }#while length(collinearity.index) > 0
 
 
 
