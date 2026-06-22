@@ -8,6 +8,8 @@ eval_clusters(
   exhaustive.dir,
   integration.RData,
   cluster.dir,
+  embed.dir = NULL,
+  pixel.level = FALSE,
   k.opt = 40,
   metric = "both",
   subsample = 10000,

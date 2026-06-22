@@ -237,9 +237,11 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
 eval_clusters <- function(exhaustive.dir,                       # path to exhaustive output
                            integration.RData,                    # path to integration .RData file
                            cluster.dir,                          # exact path to folder containing the .RDS files
+                           embed.dir   = NULL,                   # path to exhaustive_integrated output; required when pixel.level = TRUE
+                           pixel.level = FALSE,                  # TRUE = pixel-level clusters; FALSE = tile-level
                            k.opt       = 40,                     # which k to select from cluster files in the folder
                            metric      = "both",                 # "silhouette", "fm", or "both"
-                           subsample   = 10000,                  # max tiles for silhouette; NULL = use all/no subsampling
+                           subsample   = 10000,                  # max tiles/pixels for silhouette; NULL = use all
                            seed        = 42,                     # random seed for subsampling
                            title       = NULL,                   # plot title; NULL = auto
                            verbose     = TRUE){                  # print per-n progress
@@ -253,22 +255,40 @@ eval_clusters <- function(exhaustive.dir,                       # path to exhaus
   if (length(files.tmp) == 0)
     stop("No files found in cluster.dir matching k=", k.opt)
 
-  dataset.list <- readRDS(files.tmp[1])$dataset.list
+  if (pixel.level) {
+    if (is.null(embed.dir))
+      stop("embed.dir must be provided when pixel.level = TRUE")
+    dataset.list <- readRDS(files.tmp[1])$dataset.list
+    embed.blocks <- lapply(dataset.list, function(sid) {
+      ff <- list.files(file.path(embed.dir, sid), pattern = "\\.RDS$", full.names = TRUE)
+      if (!length(ff)) return(NULL)
+      B <- readRDS(ff[1])$B.allspots
+      if (is.null(B)) return(NULL)
+      mat.px <- t(B)
+      if (!is.null(colnames(B)))
+        rownames(mat.px) <- paste0(sid, "@", colnames(B))
+      mat.px
+    })
+    embed.blocks <- Filter(Negate(is.null), embed.blocks)
+    mat <- L2Norm(do.call(rbind, embed.blocks), MARGIN = 1)
+  } else {
+    dataset.list <- readRDS(files.tmp[1])$dataset.list
 
-  load(integration.RData, e <- new.env())
-  e <- as.list(e)
+    load(integration.RData, e <- new.env())
+    e <- as.list(e)
 
-  embed <- e$integration.res$LVs_embeddings
+    embed <- e$integration.res$LVs_embeddings
 
-  full.ids    <- rownames(embed)
-  sec.idx.num <- as.numeric(unlist(lapply(strsplit(full.ids, "_"), function(x) x[1])))
-  tile.ids    <- unlist(lapply(strsplit(full.ids, "_"), function(x) paste0(x[-1], collapse = "_")))
+    full.ids    <- rownames(embed)
+    sec.idx.num <- as.numeric(unlist(lapply(strsplit(full.ids, "_"), function(x) x[1])))
+    tile.ids    <- unlist(lapply(strsplit(full.ids, "_"), function(x) paste0(x[-1], collapse = "_")))
 
-  sec.names <- dataset.list[sec.idx.num]
+    sec.names <- dataset.list[sec.idx.num]
 
-  rownames(embed) <- paste0(sec.names, "@", tile.ids)
+    rownames(embed) <- paste0(sec.names, "@", tile.ids)
 
-  mat <- L2Norm(as.matrix(embed), MARGIN = 1)
+    mat <- L2Norm(as.matrix(embed), MARGIN = 1)
+  }#if pixel.level
 
   if (!is.null(subsample) && nrow(mat) > subsample){
     mat.sub <- mat[sample(nrow(mat), subsample), , drop = FALSE]
