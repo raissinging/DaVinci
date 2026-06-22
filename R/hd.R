@@ -3,27 +3,31 @@
 #' Tiles the slice, decomposes on tile aggregates, then transfers back to pixel level
 #' using impact_adaptive.
 #' @export
-exhaustive <- function(input.folder,        # path to folder containing {slice.id}.RDS files
-                       output.dir,          # path to output folder; a subfolder per slice is created
-                       k.arg      = seq(10, 20, 30),  # number of latent variables; vector = sweep over multiple k values
-                       L2_number  = 2000,   # target number of tiles per section
-                       UMI.thr    = -Inf,   # minimum UMI per pixel; -Inf keeps all pixels
-                       max.iter   = 0,      # iterative refinement passes; 0 = single-pass, no iterations
-                       normalize  = T,      # run gene_normalization(); set F if data is pre-normalized
-                       slice.id   = NULL){  # section ID (e.g. "43775"); NULL = process all .RDS in input.folder
+exhaustive_hd <- function(input.folder,                    # path to folder containing {slice.id}.RDS files
+                       output.dir,                      # path to output folder; a subfolder per slice is created
+                       k.arg            = seq(10, 20, 30),  # number of latent variables; vector = sweep over multiple k values
+                       L2_number        = 2000,         # target number of tiles per section
+                       UMI.thr          = -Inf,         # minimum UMI per pixel; -Inf keeps all pixels
+                       max.iter         = 0,            # iterative refinement passes; 0 = single-pass, no iterations
+                       normalize        = FALSE,        # run gene_normalization(); set TRUE if data is not pre-normalized
+                       graph.opt        = "Tri.mesh",  # spatial graph type: "nearest.neighbor" or "Tri.mesh"
+                       num.of.neighbor  = 4,            # number of neighbors (only used when graph.opt = "nearest.neighbor")
+                       slice.id         = NULL){        # section ID (e.g. "43775"); NULL = process all .RDS in input.folder
 
   #if no slice.id, run all files in the input folder
   if (is.null(slice.id)){
     ids <- sub("\\.RDS$", "", list.files(input.folder, pattern = "\\.RDS$"))
     for (id in ids){
-      exhaustive(input.folder = input.folder,
-                 output.dir   = output.dir,
-                 k.arg        = k.arg,
-                 L2_number    = L2_number,
-                 UMI.thr      = UMI.thr,
-                 max.iter     = max.iter,
-                 normalize    = normalize,
-                 slice.id     = id)
+      exhaustive_hd(input.folder    = input.folder,
+                 output.dir      = output.dir,
+                 k.arg           = k.arg,
+                 L2_number       = L2_number,
+                 UMI.thr         = UMI.thr,
+                 max.iter        = max.iter,
+                 normalize       = normalize,
+                 graph.opt       = graph.opt,
+                 num.of.neighbor = num.of.neighbor,
+                 slice.id        = id)
     }#for id
     return(invisible(NULL))
   }#if
@@ -65,7 +69,7 @@ exhaustive <- function(input.folder,        # path to folder containing {slice.i
   rownames(coor.tile) <- paste0("Tile_", seq_along(coor.tile[, 1]))
 
   gene.exp.tile <- tile_mat
-  L.tile        <- L_generate(coor.tile, opt = "Tri.mesh")$L
+  L.tile        <- L_generate(coor.tile, opt = graph.opt, num.of.neighbor = num.of.neighbor)$L
 
   #per-tile graph Laplacians (done once; reused across all k values)
   density.grid  <- unlist(lapply(tile_list, length))
@@ -74,7 +78,7 @@ exhaustive <- function(input.folder,        # path to folder containing {slice.i
     if (density.grid[ii] >= 3){
       gene.exp.inuse      <- as.matrix(gene.exp[, names(tile_list[[ii]])])
       coor.inuse          <- coor[names(tile_list[[ii]]), , drop = F]
-      temp                <- L_generate(coor.inuse, opt = "Tri.mesh")
+      temp                <- L_generate(coor.inuse, opt = graph.opt, num.of.neighbor = num.of.neighbor)
       gene.exp.list[[ii]] <- gene.exp.inuse
       L.list[[ii]]        <- temp$L
     }else{
@@ -184,7 +188,7 @@ exhaustive <- function(input.folder,        # path to folder containing {slice.i
 
   invisible(NULL)
 
-}#exhaustive
+}#exhaustive_hd
 
 
 
@@ -196,25 +200,31 @@ exhaustive <- function(input.folder,        # path to folder containing {slice.i
 #' Use this after running exhaustive() + selfdeco + integration (steps 1-3).
 #'
 #' @export
-exhaustive_integrated <- function(input.folder,              # path to folder containing {slice.id}.RDS files
-                                  output.dir,                # path to output folder; a subfolder per slice is created
-                                  model.dir,                 # path to integration output folder (contains .RData)
-                                  model.name = "all@FineTune@first@default", # name of the .RData file (no extension)
-                                  L2_number  = 2000,         # target number of tiles per section
-                                  UMI.thr    = -Inf,         # minimum UMI per pixel; -Inf keeps all pixels
-                                  slice.id   = NULL){        # section ID (e.g. "43775"); NULL = process all .RDS in input.folder
+exhaustive_integrated_hd <- function(input.folder,                    # path to folder containing {slice.id}.RDS files
+                                  output.dir,                      # path to output folder; a subfolder per slice is created
+                                  model.dir,                       # path to integration output folder (contains .RData)
+                                  model.name       = "all@FineTune@first@default", # name of the .RData file (no extension)
+                                  L2_number        = 2000,         # target number of tiles per section
+                                  UMI.thr          = -Inf,         # minimum UMI per pixel; -Inf keeps all pixels
+                                  normalize        = FALSE,        # run gene_normalization(); must match what was used in exhaustive()
+                                  graph.opt        = "Tri.mesh",  # spatial graph type: "nearest.neighbor" or "Tri.mesh"
+                                  num.of.neighbor  = 4,            # number of neighbors (only used when graph.opt = "nearest.neighbor")
+                                  slice.id         = NULL){        # section ID (e.g. "43775"); NULL = process all .RDS in input.folder
 
   #if no slice.id, run all files in the input folder
   if (is.null(slice.id)){
     ids <- sub("\\.RDS$", "", list.files(input.folder, pattern = "\\.RDS$"))
     for (id in ids){
-      exhaustive_integrated(input.folder = input.folder,
-                            output.dir   = output.dir,
-                            model.dir    = model.dir,
-                            model.name   = model.name,
-                            L2_number    = L2_number,
-                            UMI.thr      = UMI.thr,
-                            slice.id     = id)
+      exhaustive_integrated_hd(input.folder    = input.folder,
+                            output.dir      = output.dir,
+                            model.dir       = model.dir,
+                            model.name      = model.name,
+                            L2_number       = L2_number,
+                            UMI.thr         = UMI.thr,
+                            normalize       = normalize,
+                            graph.opt       = graph.opt,
+                            num.of.neighbor = num.of.neighbor,
+                            slice.id        = id)
     }#for id
     return(invisible(NULL))
   }#if
@@ -231,9 +241,14 @@ exhaustive_integrated <- function(input.folder,              # path to folder co
   input$gene.exp <- input$gene.exp[, keep.index]
   input$coor     <- input$coor[keep.index, ]
 
-  gene.exp         <- input$gene.exp
-  coor             <- input$coor[colnames(gene.exp), ]
-  colnames(coor)   <- c("array_row", "array_col")
+  if (normalize){
+    temp     <- gene_normalization(input$gene.exp, frac.thr = 0.95, MT.remove = T, median.norm = T)
+    gene.exp <- temp$gene.exp
+  }else{
+    gene.exp <- input$gene.exp
+  }#else
+  coor           <- input$coor[colnames(gene.exp), ]
+  colnames(coor) <- c("array_row", "array_col")
 
   #tile the section
   grid_ids        <- tile_the_slice(coor, random.seed = 1, L2_number = L2_number)
@@ -263,7 +278,7 @@ exhaustive_integrated <- function(input.folder,              # path to folder co
     if (density.grid[ii] >= 3){
       gene.exp.inuse <- as.matrix(gene.exp[, names(tile_list[[ii]])])
       coor.inuse     <- coor[names(tile_list[[ii]]), , drop = F]
-      temp           <- L_generate(coor.inuse, opt = "Tri.mesh")
+      temp           <- L_generate(coor.inuse, opt = graph.opt, num.of.neighbor = num.of.neighbor)
 
       gene.exp.list[[ii]] <- gene.exp.inuse
       L.list[[ii]]        <- temp$L
@@ -304,7 +319,7 @@ exhaustive_integrated <- function(input.folder,              # path to folder co
   message("Saved: ", slice.out, slice.id, ".RDS")
   invisible(out)
 
-}#exhaustive_integrated
+}#exhaustive_integrated_hd
 
 
 
@@ -316,7 +331,7 @@ exhaustive_integrated <- function(input.folder,              # path to folder co
 #' Use this after exhaustive() (step 1) and before integration (step 3).
 #'
 #' @export
-selfdeco <- function(input.dir,                # path to exhaustive output folder (contains {slice.id}/ subfolders)
+self_deco_hd <- function(input.dir,                # path to exhaustive output folder (contains {slice.id}/ subfolders)
                      output.dir,               # path to output folder; a subfolder per slice is created
                      LVs.filter.thr = 0.9,    # correlation threshold for consensus LV filtering in self_deco
                      freq           = 1,       # minimum frequency (number of k values) an LV must appear in
@@ -326,7 +341,7 @@ selfdeco <- function(input.dir,                # path to exhaustive output folde
   if (is.null(slice.id)){
     ids <- list.dirs(input.dir, full.names = F, recursive = F)
     for (id in ids){
-      selfdeco(input.dir      = input.dir,
+      self_deco_hd(input.dir      = input.dir,
                output.dir     = output.dir,
                LVs.filter.thr = LVs.filter.thr,
                freq           = freq,
@@ -375,7 +390,7 @@ selfdeco <- function(input.dir,                # path to exhaustive output folde
   message("Saved: ", slice.out, slice.id, ".RData")
   invisible(list(embed = embed, ICAp.res = ICAp.res))
 
-}#selfdeco
+}#self_deco_hd
 
 
 
@@ -387,7 +402,7 @@ selfdeco <- function(input.dir,                # path to exhaustive output folde
 #' Use this after selfdeco() (step 2).
 #'
 #' @export
-integration <- function(input.dir,                    # path to selfdeco output folder (contains {slice.id}/ subfolders)
+integration_hd <- function(input.dir,                    # path to selfdeco output folder (contains {slice.id}/ subfolders)
                         output.dir,                   # path to output folder; tile/ subfolder is created inside
                         mod.opt        = "all",       # gene modality mode: "all" (all genes) or "common" (shared genes only)
                         input.opt      = "FineTune",  # which decomp to use: "FineTune" or "OnlyDeco"
@@ -456,7 +471,7 @@ integration <- function(input.dir,                    # path to selfdeco output 
   message("Saved: ", out.name)
   invisible(list(embed = embed, integration.res = integration.res))
 
-}#integration
+}#integration_hd
 
 
 
@@ -468,7 +483,7 @@ integration <- function(input.dir,                    # path to selfdeco output 
 #' Sweeps over k and num.of.clusters; skips combinations that already exist.
 #'
 #' @export
-cluster_tile <- function(integration.dir,                           # path to integration tile/ output folder (contains .RData)
+cluster_tile_hd <- function(integration.dir,                           # path to integration tile/ output folder (contains .RData)
                          exhaustive.dir,                            # path to exhaustive output (for coor.tile per section)
                          output.dir,                                # path to output folder; louvain/ subfolder is created
                          model.name      = "all@FineTune@first@default", # .RData filename (no extension)
@@ -556,7 +571,7 @@ cluster_tile <- function(integration.dir,                           # path to in
 
   invisible(NULL)
 
-}#cluster_tile
+}#cluster_tile_hd
 
 
 
@@ -569,7 +584,7 @@ cluster_tile <- function(integration.dir,                           # path to in
 #' multi-pass spatial smoothing. Sweeps over k and num.of.clusters.
 #'
 #' @export
-cluster_pixel <- function(input.dir,                                    # path to exhaustive_integrated output (contains {slice.id}/ subfolders)
+cluster_pixel_hd <- function(input.dir,                                    # path to exhaustive_integrated output (contains {slice.id}/ subfolders)
                           raw.dir,                                       # path to raw RDS files (for pixel coordinates)
                           output.dir,                                    # path to output folder
                           dataset.list         = NULL,                   # character vector of section IDs; NULL = all subfolders in input.dir
@@ -665,10 +680,11 @@ cluster_pixel <- function(input.dir,                                    # path t
   if (harmony){
     message("Running Harmony batch correction...")
     meta        <- data.frame(section = mat.slice.id)
-    mat.harmony <- harmony::HarmonyMatrix(mat.norm, meta, vars_use = "section",
-                                          do_pca = FALSE, verbose = T)
-    mat.harmony <- as.matrix(mat.harmony)
+    harmony_object <- harmony::RunHarmony(data_mat = mat.norm, meta_data = meta,
+                                          vars_use = "section", return_object = TRUE)
+    mat.harmony <- t(harmony_object$getZcorr())
     rownames(mat.harmony) <- px.names
+    colnames(mat.harmony) <- colnames(mat.norm)
     message("Harmony done.")
   }else{
     mat.harmony <- mat.norm
@@ -824,4 +840,4 @@ cluster_pixel <- function(input.dir,                                    # path t
 
   invisible(NULL)
 
-}#cluster_pixel
+}#cluster_pixel_hd

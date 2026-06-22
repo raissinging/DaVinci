@@ -1,8 +1,3 @@
-# library(glmnet)
-# library(pROC)
-# library(PRROC)
-
-
 #' Find top latent variables per cluster
 #'
 #' Ranks latent variables (LVs) that best discriminate each cluster from the rest,
@@ -240,175 +235,393 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
 #'
 #' @export
 eval_clusters <- function(exhaustive.dir,                       # path to exhaustive output
-                          integration.RData,                    # path to integration .RData file
-                          cluster.dir,                          # exact path to folder containing the .RDS files (e.g. .../all/louvain/)
-                          k.opt       = 40,                     # which k to select from cluster files in the folder
-                          metric      = "both",                 # "silhouette", "fm", or "both"
-                          subsample   = 10000,                  # max tiles for silhouette; NULL = use all/no subsampling (may cause OOM)
-                          seed        = 42,                     # random seed for subsampling
-                          title       = NULL,                   # plot title; NULL = auto
-                          verbose     = T){                     # print per-n progress
+                           integration.RData,                    # path to integration .RData file
+                           cluster.dir,                          # exact path to folder containing the .RDS files
+                           k.opt       = 40,                     # which k to select from cluster files in the folder
+                           metric      = "both",                 # "silhouette", "fm", or "both"
+                           subsample   = 10000,                  # max tiles for silhouette; NULL = use all/no subsampling
+                           seed        = 42,                     # random seed for subsampling
+                           title       = NULL,                   # plot title; NULL = auto
+                           verbose     = TRUE){                  # print per-n progress
 
   metric <- match.arg(metric, c("silhouette", "fm", "both"))
 
   set.seed(seed)
 
-  #load LV matrix from integration output
-  files.tmp    <- list.files(cluster.dir, pattern = paste0("k=", k.opt), full.names = T)
-  if (length(files.tmp) == 0) stop("No files found in cluster.dir matching k=", k.opt)
+  files.tmp <- list.files(cluster.dir, pattern = paste0("k=", k.opt), full.names = TRUE)
+
+  if (length(files.tmp) == 0)
+    stop("No files found in cluster.dir matching k=", k.opt)
+
   dataset.list <- readRDS(files.tmp[1])$dataset.list
-  load(paste0(integration.RData), e <- new.env())
-  e     <- as.list(e)
+
+  load(integration.RData, e <- new.env())
+  e <- as.list(e)
+
   embed <- e$integration.res$LVs_embeddings
 
-  full.ids         <- rownames(embed)
-  sec.idx.num      <- as.numeric(unlist(lapply(strsplit(full.ids, "_"), function(x) x[1])))
-  tile.ids         <- unlist(lapply(strsplit(full.ids, "_"), function(x) paste0(x[-1], collapse = "_")))
-  sec.names        <- dataset.list[sec.idx.num]
-  mat.slice.id     <- sec.names
-  rownames(embed)  <- paste0(sec.names, "@", tile.ids) # adds section names to rownames for alignment with cluster labels
+  full.ids    <- rownames(embed)
+  sec.idx.num <- as.numeric(unlist(lapply(strsplit(full.ids, "_"), function(x) x[1])))
+  tile.ids    <- unlist(lapply(strsplit(full.ids, "_"), function(x) paste0(x[-1], collapse = "_")))
+
+  sec.names <- dataset.list[sec.idx.num]
+
+  rownames(embed) <- paste0(sec.names, "@", tile.ids)
+
   mat <- L2Norm(as.matrix(embed), MARGIN = 1)
 
-  #optionally subsample for silhouette to use less memory and speed up stuff for silhouette
   if (!is.null(subsample) && nrow(mat) > subsample){
-    mat.sub <- mat[sample(nrow(mat), subsample), ]
-  }else{
+    mat.sub <- mat[sample(nrow(mat), subsample), , drop = FALSE]
+  } else {
     mat.sub <- mat
-  }#else
+  }
 
-  #FM index helper: pair-counting similarity between two label vectors
   .fm_index <- function(a, b){
     tab <- table(a, b)
-    TP  <- sum(choose(tab, 2))
-    FP  <- sum(choose(rowSums(tab), 2)) - TP
-    FN  <- sum(choose(colSums(tab), 2)) - TP
-    TP / sqrt((TP + FP) * (TP + FN))
+
+    TP <- sum(choose(tab, 2))
+    FP <- sum(choose(rowSums(tab), 2)) - TP
+    FN <- sum(choose(colSums(tab), 2)) - TP
+
+    denom <- sqrt((TP + FP) * (TP + FN))
+
+    if (denom == 0)
+      return(NA_real_)
+
+    TP / denom
   }#.fm_index
 
-  #load pre-computed clusterings filtered by k.opt
-  files  <- list.files(cluster.dir, pattern = paste0("k=", k.opt), full.names = T)
-  if (length(files) == 0) stop("No files found in cluster.dir matching k=", k.opt)
+  files <- list.files(cluster.dir, pattern = paste0("k=", k.opt), full.names = TRUE)
+
+  if (length(files) == 0)
+    stop("No files found in cluster.dir matching k=", k.opt)
+
   n.vals <- as.numeric(sub(".*n=([0-9]+)\\.RDS", "\\1", basename(files)))
+
   files  <- files[order(n.vals)]
   n.vals <- sort(n.vals)
 
-  if (verbose) cat("Loading", length(files), "clusterings (k=", k.opt, ")...\n")
+  if (verbose)
+    cat("Loading", length(files), "clusterings (k=", k.opt, ")...\n")
+
   clusterings <- lapply(files, function(f) {
     r  <- readRDS(f)
     cl <- r$partition.smooth
+
     names(cl) <- paste0(r$mat.slice.id, "@", names(cl))
+
     cl
   })
+
   names(clusterings) <- as.character(n.vals)
 
-  #compute FM + silhouette per n
   results <- do.call(rbind, lapply(seq_along(n.vals), function(i){
-    cl.full <- clusterings[[i]]
 
-    #FM: compare to adjacent n solutions
-    fm <- NA_real_
+    cl.full <- clusterings[[i]]
+    fm      <- NA_real_
+
     if (metric %in% c("fm", "both")){
+
       fmi.vals <- numeric(0)
+
       if (i > 1){
-        common2  <- intersect(names(cl.full), names(clusterings[[i - 1]]))
-        if (length(common2) > 0)
-          fmi.vals <- c(fmi.vals, .fm_index(cl.full[common2], clusterings[[i - 1]][common2]))
-      }#if
+        common2 <- intersect(names(cl.full), names(clusterings[[i - 1]]))
+
+        if (length(common2) > 0){
+          fmi.vals <- c(
+            fmi.vals,
+            .fm_index(cl.full[common2], clusterings[[i - 1]][common2])
+          )
+        }
+      }
+
       if (i < length(n.vals)){
-        common2  <- intersect(names(cl.full), names(clusterings[[i + 1]]))
-        if (length(common2) > 0)
-          fmi.vals <- c(fmi.vals, .fm_index(cl.full[common2], clusterings[[i + 1]][common2]))
-      }#if
-      fm <- if (length(fmi.vals) > 0) mean(fmi.vals) else NA_real_
+        common2 <- intersect(names(cl.full), names(clusterings[[i + 1]]))
+
+        if (length(common2) > 0){
+          fmi.vals <- c(
+            fmi.vals,
+            .fm_index(cl.full[common2], clusterings[[i + 1]][common2])
+          )
+        }
+      }
+
+      fm <- if (length(fmi.vals) > 0) mean(fmi.vals, na.rm = TRUE) else NA_real_
     }#if fm
 
-    #silhouette: restrict to mat.sub pixels that were clustered
     sil <- NA_real_
+
     if (metric %in% c("silhouette", "both")){
+
       common <- intersect(rownames(mat.sub), names(cl.full))
+
       if (length(common) >= 2){
-        cl     <- cl.full[common]
-        sm     <- mat.sub[common, ]
+
+        cl <- cl.full[common]
+        sm <- mat.sub[common, , drop = FALSE]
+
         cl.int <- as.integer(as.factor(cl))
-        if (length(unique(cl.int)) >= 2)
-          sil <- mean(cluster::silhouette(cl.int, dist(sm))[, 3])
-      }#if
+
+        if (length(unique(cl.int)) >= 2 && length(unique(cl.int)) < length(cl.int)){
+          sil <- mean(cluster::silhouette(cl.int, stats::dist(sm))[, 3])
+        }
+      }
     }#if silhouette
 
     if (verbose){
+
       msg <- sprintf("n=%d", n.vals[i])
-      if (metric %in% c("fm",        "both")) msg <- paste0(msg, sprintf("  FM=%.3f",  fm))
-      if (metric %in% c("silhouette","both")) msg <- paste0(msg, sprintf("  sil=%.3f", sil))
+
+      if (metric %in% c("fm", "both"))
+        msg <- paste0(msg, sprintf("  FM=%.3f", fm))
+
+      if (metric %in% c("silhouette", "both"))
+        msg <- paste0(msg, sprintf("  sil=%.3f", sil))
+
       cat(msg, "\n")
     }#if verbose
-    data.frame(n = n.vals[i], FM = fm, Silhouette = sil)
+
+    data.frame(
+      n          = n.vals[i],
+      FM         = fm,
+      Silhouette = sil
+    )
   }))
 
-  #optimal n
-  best.sil <- if (metric %in% c("silhouette","both") && any(!is.na(results$Silhouette)))
-                results$n[which.max(results$Silhouette)] else NULL
-  best.fm  <- if (metric %in% c("fm","both") && any(!is.na(results$FM)))
-                results$n[which.max(ifelse(is.na(results$FM), -Inf, results$FM))] else NULL
+  best.sil <- if (
+    metric %in% c("silhouette", "both") &&
+      any(!is.na(results$Silhouette))
+  ) {
+    results$n[which.max(ifelse(is.na(results$Silhouette), -Inf, results$Silhouette))]
+  } else {
+    NULL
+  }
+
+  best.fm <- if (
+    metric %in% c("fm", "both") &&
+      any(!is.na(results$FM))
+  ) {
+    results$n[which.max(ifelse(is.na(results$FM), -Inf, results$FM))]
+  } else {
+    NULL
+  }
 
   if (verbose){
+
     parts <- c()
-    if (!is.null(best.sil)) parts <- c(parts, paste0("Silhouette: ", best.sil))
-    if (!is.null(best.fm))  parts <- c(parts, paste0("FM: ",         best.fm))
-    if (length(parts) > 0)  cat(sprintf("\nOptimal n — %s\n", paste(parts, collapse = " | ")))
+
+    if (!is.null(best.sil))
+      parts <- c(parts, paste0("Silhouette: ", best.sil))
+
+    if (!is.null(best.fm))
+      parts <- c(parts, paste0("FM: ", best.fm))
+
+    if (length(parts) > 0)
+      cat(sprintf("\nOptimal n — %s\n", paste(parts, collapse = " | ")))
   }#if verbose
 
-  #plot: only include columns for active metrics
-  active.cols   <- c(if (metric %in% c("fm",        "both")) "FM",
-                     if (metric %in% c("silhouette","both")) "Silhouette")
-  active.colors <- c("FM" = "purple", "Silhouette" = "forestgreen")[active.cols]
+  plot.title <- if (!is.null(title)) {
+    title
+  } else {
+    suf <- if (metric %in% c("silhouette", "both") && !is.null(subsample)) {
+      paste0(" (sil subsample=", subsample, ")")
+    } else {
+      ""
+    }
 
-  long.df <- reshape(results[, c("n", active.cols)],
-                     varying   = active.cols,
-                     v.names   = "value",
-                     timevar   = "metric",
-                     times     = active.cols,
-                     direction = "long")
-
-  highlight.rows <- list()
-  if (!is.null(best.sil))
-    highlight.rows[["Silhouette"]] <- data.frame(
-      n = best.sil, metric = "Silhouette",
-      y = results$Silhouette[match(best.sil, results$n)])
-  if (!is.null(best.fm))
-    highlight.rows[["FM"]] <- data.frame(
-      n = best.fm, metric = "FM",
-      y = results$FM[match(best.fm, results$n)])
-
-  plot.title <- if (!is.null(title)) title else{
-    suf <- if (metric %in% c("silhouette","both") && !is.null(subsample))
-             paste0(" (sil subsample=", subsample, ")") else ""
     paste0("Cluster quality — k=", k.opt, suf)
   }
 
-  p <- ggplot2::ggplot() +
-    ggplot2::geom_line(data  = long.df,
-                       ggplot2::aes(x = n, y = value, color = metric),
-                       linewidth = 0.8, na.rm = T) +
-    ggplot2::geom_point(data = long.df,
-                        ggplot2::aes(x = n, y = value, color = metric),
-                        size = 2, na.rm = T) +
-    ggplot2::scale_color_manual(values = active.colors) +
-    ggplot2::scale_x_log10(breaks = n.vals, labels = n.vals) +
-    ggplot2::labs(title = plot.title, x = "Number of clusters (n)", y = "Score", color = NULL) +
-    ggplot2::theme_classic() +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
+  active.colors <- c(
+    "FM"         = "purple",
+    "Silhouette" = "forestgreen"
+  )
 
-  if (length(highlight.rows) > 0){
-    hl <- do.call(rbind, highlight.rows)
-    p  <- p + ggplot2::geom_point(data = hl,
-                                   ggplot2::aes(x = n, y = y, color = metric),
-                                   size = 6, shape = 21, stroke = 2,
-                                   fill = NA, show.legend = F)
-  }#if
+  if (metric == "both"){
+
+    fm.rng  <- range(results$FM, na.rm = TRUE)
+    sil.rng <- range(results$Silhouette, na.rm = TRUE)
+
+    if (!all(is.finite(fm.rng)) || !all(is.finite(sil.rng))){
+      warning("Cannot make dual-axis plot because FM or Silhouette has no finite values.")
+      print(results)
+      return(invisible(results))
+    }
+
+    if (diff(fm.rng) == 0)
+      fm.rng <- fm.rng + c(-0.01, 0.01)
+
+    if (diff(sil.rng) == 0)
+      sil.rng <- sil.rng + c(-0.01, 0.01)
+
+    .sil_to_fm <- function(x){
+      (x - sil.rng[1]) / diff(sil.rng) * diff(fm.rng) + fm.rng[1]
+    }
+
+    .fm_to_sil <- function(x){
+      (x - fm.rng[1]) / diff(fm.rng) * diff(sil.rng) + sil.rng[1]
+    }
+
+    plot.df <- rbind(
+      data.frame(
+        n      = results$n,
+        metric = "FM",
+        y      = results$FM
+      ),
+      data.frame(
+        n      = results$n,
+        metric = "Silhouette",
+        y      = .sil_to_fm(results$Silhouette)
+      )
+    )
+
+    p <- ggplot2::ggplot() +
+      ggplot2::geom_line(
+        data = plot.df,
+        ggplot2::aes(x = n, y = y, color = metric),
+        linewidth = 0.8,
+        na.rm = TRUE
+      ) +
+      ggplot2::geom_point(
+        data = plot.df,
+        ggplot2::aes(x = n, y = y, color = metric),
+        size = 2,
+        na.rm = TRUE
+      ) +
+      ggplot2::scale_color_manual(values = active.colors) +
+      ggplot2::scale_x_log10(breaks = n.vals, labels = n.vals) +
+      ggplot2::scale_y_continuous(
+        name = "FM",
+        sec.axis = ggplot2::sec_axis(
+          trans = ~ .fm_to_sil(.),
+          name  = "Silhouette"
+        )
+      ) +
+      ggplot2::labs(
+        title = plot.title,
+        x     = "Number of clusters (n)",
+        color = NULL
+      ) +
+      ggplot2::theme_classic() +
+      ggplot2::theme(
+        axis.text.x        = ggplot2::element_text(angle = 45, hjust = 1),
+        axis.title.y.left  = ggplot2::element_text(color = active.colors["FM"]),
+        axis.text.y.left   = ggplot2::element_text(color = active.colors["FM"]),
+        axis.title.y.right = ggplot2::element_text(color = active.colors["Silhouette"]),
+        axis.text.y.right  = ggplot2::element_text(color = active.colors["Silhouette"])
+      )
+
+    if (!is.null(best.fm)){
+      p <- p +
+        ggplot2::geom_point(
+          data = data.frame(
+            n = best.fm,
+            y = results$FM[match(best.fm, results$n)]
+          ),
+          ggplot2::aes(x = n, y = y),
+          color = active.colors["FM"],
+          size = 6,
+          shape = 21,
+          stroke = 2,
+          fill = NA,
+          show.legend = FALSE
+        )
+    }#if best.fm
+
+    if (!is.null(best.sil)){
+      p <- p +
+        ggplot2::geom_point(
+          data = data.frame(
+            n = best.sil,
+            y = .sil_to_fm(results$Silhouette[match(best.sil, results$n)])
+          ),
+          ggplot2::aes(x = n, y = y),
+          color = active.colors["Silhouette"],
+          size = 6,
+          shape = 21,
+          stroke = 2,
+          fill = NA,
+          show.legend = FALSE
+        )
+    }#if best.sil
+
+  } else {
+
+    active.cols <- c(
+      if (metric == "fm") "FM",
+      if (metric == "silhouette") "Silhouette"
+    )
+
+    long.df <- data.frame(
+      n      = results$n,
+      metric = active.cols,
+      value  = results[[active.cols]]
+    )
+
+    p <- ggplot2::ggplot() +
+      ggplot2::geom_line(
+        data = long.df,
+        ggplot2::aes(x = n, y = value, color = metric),
+        linewidth = 0.8,
+        na.rm = TRUE
+      ) +
+      ggplot2::geom_point(
+        data = long.df,
+        ggplot2::aes(x = n, y = value, color = metric),
+        size = 2,
+        na.rm = TRUE
+      ) +
+      ggplot2::scale_color_manual(values = active.colors[active.cols]) +
+      ggplot2::scale_x_log10(breaks = n.vals, labels = n.vals) +
+      ggplot2::labs(
+        title = plot.title,
+        x     = "Number of clusters (n)",
+        y     = active.cols,
+        color = NULL
+      ) +
+      ggplot2::theme_classic() +
+      ggplot2::theme(
+        axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)
+      )
+
+    if (metric == "fm" && !is.null(best.fm)){
+      p <- p +
+        ggplot2::geom_point(
+          data = data.frame(
+            n = best.fm,
+            y = results$FM[match(best.fm, results$n)]
+          ),
+          ggplot2::aes(x = n, y = y),
+          color = active.colors["FM"],
+          size = 6,
+          shape = 21,
+          stroke = 2,
+          fill = NA,
+          show.legend = FALSE
+        )
+    }#if best.fm
+
+    if (metric == "silhouette" && !is.null(best.sil)){
+      p <- p +
+        ggplot2::geom_point(
+          data = data.frame(
+            n = best.sil,
+            y = results$Silhouette[match(best.sil, results$n)]
+          ),
+          ggplot2::aes(x = n, y = y),
+          color = active.colors["Silhouette"],
+          size = 6,
+          shape = 21,
+          stroke = 2,
+          fill = NA,
+          show.legend = FALSE
+        )
+    }#if best.sil
+  }#if metric == "both"
 
   print(p)
-  invisible(results)
 
+  invisible(results)
 }#eval_clusters
 
 

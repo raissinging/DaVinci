@@ -31,7 +31,12 @@ Imports:
     BiocNeighbors,
     future,
     future.apply,
-    progressr
+    progressr,
+    glmnet,
+    ggplot2,
+    RColorBrewer,
+    RcppHNSW,
+    FNN
 Remotes:
     bioc::BiocNeighbors
 Suggests:

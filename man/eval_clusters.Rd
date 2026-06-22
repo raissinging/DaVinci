@@ -13,7 +13,7 @@ eval_clusters(
   subsample = 10000,
   seed = 42,
   title = NULL,
-  verbose = T
+  verbose = TRUE
 )
 }
 \description{

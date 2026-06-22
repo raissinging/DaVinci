@@ -325,20 +325,24 @@ Horizontal.Integration <- function(Y.list,
   }else if (batch.correction=="harmony"){
 
     message("Batch correction starts.")
-    LVs_embeddings <- harmony::HarmonyMatrix(t(LVs), unlist(lapply(strsplit(colnames(LVs), "_"), function(x){x[[1]]})), do_pca = F, verbose = F, max.iter.harmony = 30)
+    .meta <- data.frame(section = unlist(lapply(strsplit(colnames(LVs), "_"), function(x){x[[1]]})))
+    harmony_object <- harmony::RunHarmony(data_mat = t(LVs), meta_data = .meta,
+                                          vars_use = "section", return_object = TRUE)
+    LVs_embeddings <- t(harmony_object$getZcorr())
     rownames(LVs_embeddings) <- colnames(LVs)
+    colnames(LVs_embeddings) <- rownames(LVs)
     message("Batch correction finishes.")
 
   }else if (batch.correction == "combat"){
     message("Batch correction starts.")
-    LVs_embeddings <- sva::ComBat(LVs, 
+    LVs_embeddings <- sva::ComBat(LVs,
                                   unlist(lapply(strsplit(colnames(LVs), "_"), function(x){x[[1]]}))
                                   )
     LVs_embeddings <- t(LVs_embeddings)
     rownames(LVs_embeddings) <- colnames(LVs)
     message("Batch correction finishes.")
 
-  }#else if 
+  }#else if
   
 
   slice_id <- unlist(lapply(strsplit(rownames(LVs_embeddings), "_"), function(x){x[1]}))
@@ -430,26 +434,24 @@ Horizontal.Integration.first <- function(Y.list,
 
   }else if (batch.correction == "harmony"){
     message("Batch correction starts.")
-    #ptm <- proc.time()
-    LVs_embeddings <- harmony::HarmonyMatrix(t(LVs), 
-                                             unlist(lapply(strsplit(colnames(LVs), "_"), function(x){x[[1]]})), 
-                                             do_pca = F, 
-                                             verbose = F, 
-                                             max.iter.harmony = 30)
-    #print(proc.time()-ptm)
+    .meta <- data.frame(section = unlist(lapply(strsplit(colnames(LVs), "_"), function(x){x[[1]]})))
+    harmony_object <- harmony::RunHarmony(data_mat = t(LVs), meta_data = .meta,
+                                          vars_use = "section", return_object = TRUE)
+    LVs_embeddings <- t(harmony_object$getZcorr())
     rownames(LVs_embeddings) <- colnames(LVs)
+    colnames(LVs_embeddings) <- rownames(LVs)
     message("Batch correction finishes.")
-    
+
   }else if (batch.correction == "combat"){
     message("Batch correction starts.")
-    LVs_embeddings <- sva::ComBat(LVs, 
+    LVs_embeddings <- sva::ComBat(LVs,
                                   unlist(lapply(strsplit(colnames(LVs), "_"), function(x){x[[1]]}))
                                   )
     LVs_embeddings <- t(LVs_embeddings)
     rownames(LVs_embeddings) <- colnames(LVs)
     message("Batch correction finishes.")
 
-  }#else if 
+  }#else if
   
 
   slice_id <- unlist(lapply(strsplit(rownames(LVs_embeddings), "_"), function(x){x[1]}))
