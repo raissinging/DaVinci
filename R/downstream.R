@@ -234,7 +234,7 @@ find_top_lvs <- function(exhaustive.dir,                # path to exhaustive out
 #' embedding (controlled by subsample).
 #'
 #' @export
-eval_clusters <- function(exhaustive.dir,                       # path to exhaustive output
+n_cluster_metrics <- function(exhaustive.dir,                       # path to exhaustive output
                            integration.RData,                    # path to integration .RData file
                            cluster.dir,                          # exact path to folder containing the .RDS files
                            embed.dir   = NULL,                   # path to exhaustive_integrated output; required when pixel.level = TRUE
@@ -437,7 +437,7 @@ eval_clusters <- function(exhaustive.dir,                       # path to exhaus
       parts <- c(parts, paste0("FM: ", best.fm))
 
     if (length(parts) > 0)
-      cat(sprintf("\nOptimal n — %s\n", paste(parts, collapse = " | ")))
+      cat(sprintf("\nCandidate n — %s\n", paste(parts, collapse = " | ")))
   }#if verbose
 
   plot.title <- if (!is.null(title)) {
@@ -642,7 +642,7 @@ eval_clusters <- function(exhaustive.dir,                       # path to exhaus
   print(p)
 
   invisible(results)
-}#eval_clusters
+}#n_cluster_metrics
 
 
 #' Extract LV loadings from integration output
@@ -651,7 +651,7 @@ eval_clusters <- function(exhaustive.dir,                       # path to exhaus
 #' top-N feature table to a TSV file and optionally plotting a z-scored bubble heatmap.
 #'
 #' @export
-lv_loadings <- function(integration.RData,   # path to integration .RData file
+lv_rank_genes <- function(integration.RData,   # path to integration .RData file
                               output.dir  = NULL,  # directory to write TSV; NULL = skip
                               num.of.top  = NULL,  # top N features per LV; NULL = all features
                               plot        = FALSE, # whether to print the bubble heatmap
@@ -726,4 +726,4 @@ lv_loadings <- function(integration.RData,   # path to integration .RData file
   if (plot) print(p)
   invisible(list(loading.tab = tab, loading.tab.z = tab.z, plot = p))
 
-}#lv_loadings
+}#lv_rank_genes
